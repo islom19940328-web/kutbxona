@@ -1,0 +1,689 @@
+<?php
+
+session_start();
+
+require_once "db.php";
+
+function e($value)
+{
+    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
+}
+
+function shortText($text, $length = 120)
+{
+    $text = trim(strip_tags((string)$text));
+    if (mb_strlen($text, 'UTF-8') <= $length) {
+        return $text;
+    }
+    return mb_substr($text, 0, $length, 'UTF-8') . "...";
+}
+
+
+
+$search = trim($_GET["search"] ?? "");
+
+$perPage = 18;
+$page = max(1, (int)($_GET["page"] ?? 1));
+$offset = ($page - 1) * $perPage;
+
+if ($search !== "") {
+    $where = "
+        WHERE
+            LOWER(COALESCE(title, '')) LIKE LOWER(:search_title)
+            OR LOWER(COALESCE(author, '')) LIKE LOWER(:search_author)
+            OR LOWER(COALESCE(genre, '')) LIKE LOWER(:search_genre)
+            OR CAST(publication_year AS CHAR) LIKE :search_year
+    ";
+
+    $keyword = "%" . $search . "%";
+
+    $countStmt = $pdo->prepare("
+        SELECT COUNT(*) FROM books $where
+    ");
+
+    $params = [
+        ":search_title"  => $keyword,
+        ":search_author" => $keyword,
+        ":search_genre"  => $keyword,
+        ":search_year"   => $keyword
+    ];
+
+    $countStmt->execute($params);
+    $filteredBooks = (int)$countStmt->fetchColumn();
+
+    $stmt = $pdo->prepare("
+        SELECT *
+        FROM books
+        $where
+        ORDER BY id DESC
+        LIMIT $perPage OFFSET $offset
+    ");
+
+    $stmt->execute($params);
+    $books = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+} else {
+    $filteredBooks = (int)$pdo->query("
+        SELECT COUNT(*) FROM books
+    ")->fetchColumn();
+
+    $stmt = $pdo->prepare("
+        SELECT *
+        FROM books
+        ORDER BY id DESC
+        LIMIT $perPage OFFSET $offset
+    ");
+
+    $stmt->execute();
+    $books = $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+$totalPages = max(1, (int)ceil($filteredBooks / $perPage));
+
+if ($page > $totalPages) {
+    $page = $totalPages;
+    $offset = ($page - 1) * $perPage;
+
+    if ($search !== "") {
+        $stmt = $pdo->prepare("
+            SELECT *
+            FROM books
+            $where
+            ORDER BY id DESC
+            LIMIT $perPage OFFSET $offset
+        ");
+        $stmt->execute($params);
+    } else {
+        $stmt = $pdo->prepare("
+            SELECT *
+            FROM books
+            ORDER BY id DESC
+            LIMIT $perPage OFFSET $offset
+        ");
+        $stmt->execute();
+    }
+
+    $books = $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+
+$totalBooks = (int)$pdo->query("SELECT COUNT(*) FROM books")->fetchColumn();
+
+$totalEvents = (int)$pdo->query("
+    SELECT COUNT(*) FROM events WHERE is_active = 1
+")->fetchColumn();
+
+$totalNews = (int)$pdo->query("
+    SELECT COUNT(*) FROM news WHERE is_active = 1
+")->fetchColumn();
+
+$stmt = $pdo->query("
+    SELECT * FROM news
+    WHERE is_active = 1
+    ORDER BY news_date DESC, id DESC
+    LIMIT 3
+");
+$newsList = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+$stmt = $pdo->query("
+    SELECT * FROM events
+    WHERE is_active = 1
+    ORDER BY event_date ASC, event_time ASC, id DESC
+    LIMIT 3
+");
+$eventsList = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+$stmt = $pdo->query("
+    SELECT * FROM about
+    ORDER BY id ASC
+    LIMIT 1
+");
+$about = $stmt->fetch(PDO::FETCH_ASSOC);
+
+$aboutTitle = $about["title"] ?? "Markaz haqida";
+$aboutContent = $about["content"] ?? "";
+$aboutImage = $about["image"] ?? "";
+$aboutAddress = $about["address"] ?? "";
+$aboutPhone = $about["phone"] ?? "";
+$aboutEmail = $about["email"] ?? "";
+
+$telegramUrl = "#";
+$instagramUrl = "#";
+$facebookUrl = "#";
+$websiteUrl = "http://192.168.0.254/";
+$currentYear = date("Y");
+
+?>
+
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sharof Rashidov nomidagi Jizzax viloyat axborot-kutubxona markazi</title>
+    <meta name="description" content="Sharof Rashidov nomidagi Jizzax viloyat axborot-kutubxona markazi elektron katalogi">
+    <link rel="stylesheet" href="style.css">
+   <style>
+    #search-results {
+        scroll-margin-top: 24px;
+    }
+
+    .search-result-notice {
+        margin: 0 0 18px;
+        padding: 12px 16px;
+        border-radius: 8px;
+        background: #f3f7fb;
+        color: #24364b;
+    }
+
+    /* Kitoblar joylashuvi */
+    .books-grid {
+        align-items: stretch;
+    }
+
+    .books-grid > .book-card {
+        min-width: 0;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+    }
+
+    /* Kitob muqovasi */
+    .books-grid .book-card .book-cover {
+        flex-shrink: 0;
+    }
+
+    .books-grid .book-card .book-cover img {
+        display: block;
+        max-width: 100%;
+        object-fit: contain;
+    }
+
+    /* Kitob haqida ma'lumotlar */
+    .books-grid .book-card .book-content {
+        min-width: 0;
+        height: auto;
+        flex: 1 1 auto;
+        overflow: visible;
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+
+    /* KITOB NOMI   TO LIQ KO RINADI */
+    .books-grid .book-card .book-content h3 {
+        display: block !important;
+        width: 100%;
+        height: auto !important;
+        min-height: 0 !important;
+        max-height: none !important;
+
+        font-size: 13px !important;
+        line-height: 1.45 !important;
+        font-weight: 400;
+
+        white-space: normal !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+        text-wrap: wrap;
+
+        -webkit-line-clamp: unset !important;
+        -webkit-box-orient: initial !important;
+
+        overflow-wrap: anywhere;
+        word-break: normal;
+
+        margin-top: 0;
+        margin-bottom: 8px;
+    }
+
+    /* MUALLIF */
+    .books-grid .book-card .book-content .book-author {
+        display: block;
+        font-size: 12px;
+        line-height: 1.5;
+	font-weight: 600;
+	color: #000000 !important;
+
+        white-space: normal !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+
+        overflow-wrap: anywhere;
+        margin-bottom: 8px;
+    }
+
+    /* JANR */
+    .books-grid .book-card .book-content .book-genre {
+        display: inline-block;
+        max-width: 100%;
+
+        font-size: 12px;
+        line-height: 1.4;
+
+        white-space: normal !important;
+        overflow-wrap: anywhere;
+    }
+
+    /* Kichik ekranlar */
+   @media (max-width: 850px) {
+    .books-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+        gap: 15px;
+    }
+}
+
+/* Telefon */
+@media (max-width: 600px) {
+    .books-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+        gap: 12px;
+    }
+}
+
+/* Juda kichik ekran */
+@media (max-width: 380px) {
+    .books-grid {
+        grid-template-columns: 1fr !important;
+    }
+}
+
+/* Kitoblar sahifalari */
+.pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 30px;
+}
+
+.pagination a {
+    display: inline-flex;
+    justify-content: center;
+    align-items: center;
+    min-width: 40px;
+    min-height: 40px;
+    padding: 8px 12px;
+    border: 1px solid #d8e0e8;
+    border-radius: 8px;
+    background: #fff;
+    color: #24364b;
+    text-decoration: none;
+    box-sizing: border-box;
+}
+
+.pagination a:hover,
+.pagination a.active {
+    background: #245da8;
+    color: #fff;
+    border-color: #245da8;
+}
+
+</style>
+</head>
+<body>
+
+<header class="site-header">
+    <div class="container header-inner">
+        <a href="index.php" class="brand">
+            <?php if (file_exists(__DIR__ . "/logo.png")): ?>
+                <img src="logo.png" alt="Jizzax viloyat axborot-kutubxona markazi" class="site-logo">
+            <?php else: ?>
+                <div class="logo-placeholder">AKM</div>
+            <?php endif; ?>
+            <div class="brand-text">
+                <strong>Sharof Rashidov nomidagi</strong>
+                <span>Jizzax viloyat axborot-kutubxona markazi</span>
+            </div>
+        </a>
+        <nav class="main-nav">
+            <a href="index.php" class="active">Bosh sahifa</a>
+            <a href="katalog/index.php">Elektron katalog</a>
+            <a href="#yangiliklar">Yangiliklar</a>
+            <a href="#tadbirlar">Tadbirlar</a>
+            <a href="about.php">Markaz haqida</a>
+        </nav>
+        <a href="admin/login.php" class="header-login">Kirish</a>
+    </div>
+</header>
+
+<section class="hero">
+    <div class="hero-overlay"></div>
+    <div class="container hero-container">
+        <div class="hero-content">
+            <div class="hero-label">BILIM - KELAJAK KAFOLOTI</div>
+            <h1>Sharof Rashidov nomidagi<br>Jizzax viloyat<br>axborot-kutubxona markazi</h1>
+            <p class="hero-description">Zamonaviy axborot xizmatlari, elektron katalog va keng kitob fondi siz uchun.</p>
+            <form method="GET" action="index.php" class="hero-search">
+                <div class="search-icon">Q</div>
+                <input type="text" name="search" value="<?= e($search) ?>" placeholder="Kitob nomi, muallif yoki janr bo'yicha qidiring...">
+                <div class="search-buttons">
+                    <button type="submit" class="search-button">Qidirish</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</section>
+
+<section class="quick-info">
+    <div class="container">
+        <div class="quick-info-card">
+            <a href="katalog/index.php" class="quick-item">
+                <div class="quick-icon">E</div>
+                <div><strong>Elektron katalog</strong><span><?= number_format($totalBooks, 0, '.', ' ') ?> ta mavjud kitob</span></div>
+            </a>
+            <div class="quick-divider"></div>
+            <a href="#tadbirlar" class="quick-item">
+                <div class="quick-icon">T</div>
+                <div><strong>Tadbirlar</strong><span><?= number_format($totalEvents, 0, '.', ' ') ?> ta tadbir</span></div>
+            </a>
+            <div class="quick-divider"></div>
+            <a href="#yangiliklar" class="quick-item">
+                <div class="quick-icon">Y</div>
+                <div><strong>Yangiliklar</strong><span><?= number_format($totalNews, 0, '.', ' ') ?> ta yangilik</span></div>
+            </a>
+        </div>
+    </div>
+</section>
+
+<section class="section books-section" id="search-results">
+    <div class="container">
+        <div class="section-heading">
+            <div>
+                <span class="section-label">ELEKTRON KATALOG</span>
+                <h2><?= $search !== "" ? "Qidiruv natijalari" : "So'nggi kitoblar" ?></h2>
+                <p>
+                    <?php if ($search !== ""): ?>
+                        <?= e($search)?> so'rovi bo'yicha topilgan kitoblar
+                    <?php else: ?>
+                        Elektron katalogga qo'shilgan so'nggi kitoblar
+                    <?php endif; ?>
+                </p>
+            </div>
+            <a href="katalog/index.php" class="view-all">Barcha kitoblarni ko'rish</a>
+        </div>
+
+                <?php if ($search !== ""): ?>
+            <div class="search-result-notice">
+                <strong><?= number_format($filteredBooks, 0, '.', ' ') ?> ta kitob topildi.</strong>
+                <?= e($search) ?> so'rovi bo'yicha qidiruv natijalari.
+            </div>
+        <?php else: ?>
+            <div class="search-result-notice">
+                Katalogda jami
+                <strong><?= number_format($filteredBooks, 0, '.', ' ') ?> ta kitob</strong>
+                mavjud.
+            </div>
+        <?php endif; ?>
+
+        <?php if ($search !== "" && empty($books)): ?>
+            <div class="search-result-notice">
+                Boshqa so z bilan qidirib ko ring.
+            </div>
+        <?php endif; ?>
+
+        <div class="books-grid">
+            <?php if (!empty($books)): ?>
+                <?php foreach ($books as $book): ?>
+                    <a href="katalog/book.php?id=<?= (int)$book["id"] ?>" class="book-card">
+                        <div class="book-cover">
+                            <?php if (!empty($book["cover_image"])): ?>
+                                <img src="uploads/covers/<?= e(basename($book["cover_image"])) ?>" alt="<?= e($book["title"]) ?>">
+                            <?php else: ?>
+                                <div class="book-cover-empty">KITOB</div>
+                            <?php endif; ?>
+                        </div>
+                        <div class="book-content">
+                            <h3><?= e($book["title"]) ?></h3>
+                            <p class="book-author"><?= e($book["author"] ?: "Muallif ko'rsatilmagan") ?></p>
+                            <?php if (!empty($book["genre"])): ?>
+                                <span class="book-genre"><?= e($book["genre"]) ?></span>
+                            <?php endif; ?>
+                        </div>
+                    </a>
+                <?php endforeach; ?>
+            <?php elseif ($search === ""): ?>
+                <div class="empty-message">Hozircha kitoblar mavjud emas.</div>
+            <?php endif; ?>
+      
+        </div>
+
+        <?php if ($totalPages > 1): ?>
+            <nav class="pagination" aria-label="Kitoblar sahifalari">
+                <?php
+                $queryParams = [];
+
+                if ($search !== "") {
+                    $queryParams["search"] = $search;
+                }
+                ?>
+
+                <?php if ($page > 1): ?>
+                    <?php $queryParams["page"] = $page - 1; ?>
+                    <a href="index.php?<?= e(http_build_query($queryParams)) ?>#search-results">
+                        &laquo; Oldingi
+                    </a>
+                <?php endif; ?>
+
+                <?php for ($i = 1; $i <= $totalPages; $i++): ?>
+                    <?php $queryParams["page"] = $i; ?>
+                    <a
+                        href="index.php?<?= e(http_build_query($queryParams)) ?>#search-results"
+                        class="<?= $i === $page ? 'active' : '' ?>"
+                    ><?= $i ?></a>
+                <?php endfor; ?>
+
+                <?php if ($page < $totalPages): ?>
+                    <?php $queryParams["page"] = $page + 1; ?>
+                    <a href="index.php?<?= e(http_build_query($queryParams)) ?>#search-results">
+                        Keyingi &raquo;
+                    </a>
+                <?php endif; ?>
+            </nav>
+        <?php endif; ?>
+
+    </div>
+</section>
+
+<section class="section news-events-section">
+
+    <div class="container news-events-grid">
+        <div class="news-area" id="yangiliklar">
+            <div class="section-heading compact">
+                <div><span class="section-label">SO'NGGI XABARLAR</span><h2>Yangiliklar</h2></div>
+                <a href="news.php" class="view-all">Barchasini ko'rish</a>
+            </div>
+            <div class="news-grid">
+                <?php if (!empty($newsList)): ?>
+                    <?php foreach ($newsList as $news): ?>
+                        <a href="news_detail.php?id=<?= (int)$news["id"] ?>" class="news-card">
+                            <div class="news-image">
+                                <?php if (!empty($news["image"])): ?>
+                                    <img src="uploads/news/<?= e(basename($news["image"])) ?>" alt="<?= e($news["title"]) ?>">
+                                <?php else: ?>
+                                    <div class="news-image-empty">Yangilik</div>
+                                <?php endif; ?>
+                            </div>
+                            <div class="news-content">
+                                <?php if (!empty($news["news_date"])): ?>
+                                    <div class="news-date"><?= date("d.m.Y", strtotime($news["news_date"])) ?></div>
+                                <?php endif; ?>
+                                <h3><?= e($news["title"]) ?></h3>
+                                <p><?= e(shortText($news["short_text"], 115)) ?></p>
+                                <span class="read-more">Batafsil</span>
+                            </div>
+                        </a>
+                    <?php endforeach; ?>
+                <?php else: ?>
+                    <div class="empty-message">Hozircha yangiliklar mavjud emas.</div>
+                <?php endif; ?>
+            </div>
+        </div>
+
+        <div class="events-area" id="tadbirlar">
+            <div class="section-heading compact">
+                <div><span class="section-label">REJADAGI TADBIRLAR</span><h2>Tadbirlar</h2></div>
+                <a href="events.php" class="view-all">Barchasini ko'rish</a>
+            </div>
+            <div class="events-list">
+                <?php if (!empty($eventsList)): ?>
+                    <?php foreach ($eventsList as $event): ?>
+                        <a href="event_detail.php?id=<?= (int)$event["id"] ?>" class="event-card">
+                            <?php
+                            $eventDay = !empty($event["event_date"]) ? date("d", strtotime($event["event_date"])) : "--";
+                            $eventMonth = !empty($event["event_date"]) ? date("M", strtotime($event["event_date"])) : "---";
+                            ?>
+                            <div class="event-date-box"><strong><?= e($eventDay) ?></strong><span><?= e($eventMonth) ?></span></div>
+                            <div class="event-info">
+                                <?php if (!empty($event["event_time"])): ?>
+                                    <small><?= e(substr($event["event_time"], 0, 5)) ?></small>
+                                <?php endif; ?>
+                                <h3><?= e($event["title"]) ?></h3>
+                                <?php if (!empty($event["location"])): ?><p><?= e($event["location"]) ?></p><?php endif; ?>
+                            </div>
+                            <?php if (!empty($event["image"])): ?>
+                                <img src="uploads/events/<?= e(basename($event["image"])) ?>" alt="<?= e($event["title"]) ?>" class="event-thumb">
+                            <?php endif; ?>
+                        </a>
+                    <?php endforeach; ?>
+                <?php else: ?>
+                    <div class="empty-message">Hozircha tadbirlar mavjud emas.</div>
+                <?php endif; ?>
+            </div>
+        </div>
+   
+        </div>
+
+        <?php if ($totalPages > 1): ?>
+            <nav class="pagination" aria-label="Kitoblar sahifalari">
+                <?php
+                $baseUrl = "index.php?";
+                $queryParams = [];
+
+                if ($search !== "") {
+                    $queryParams["search"] = $search;
+                }
+                ?>
+
+                <?php if ($page > 1): ?>
+                    <?php
+                    $queryParams["page"] = $page - 1;
+                    ?>
+                    <a href="<?= e($baseUrl . http_build_query($queryParams)) ?>">
+                        &laquo; Oldingi
+                    </a>
+                <?php endif; ?>
+
+                <?php for ($i = 1; $i <= $totalPages; $i++): ?>
+                    <?php $queryParams["page"] = $i; ?>
+                    <a
+                        href="<?= e($baseUrl . http_build_query($queryParams)) ?>"
+                        class="<?= $i === $page ? 'active' : '' ?>"
+                    ><?= $i ?></a>
+                <?php endfor; ?>
+
+                <?php if ($page < $totalPages): ?>
+                    <?php $queryParams["page"] = $page + 1; ?>
+                    <a href="<?= e($baseUrl . http_build_query($queryParams)) ?>">
+                        Keyingi &raquo;
+                    </a>
+                <?php endif; ?>
+            </nav>
+        <?php endif; ?>
+
+    </div>
+</section>
+
+<section class="section news-events-section">
+
+    <div class="container">
+        <div class="about-card">
+            <div class="about-photo">
+                <?php if (!empty($aboutImage)): ?>
+                    <img src="uploads/about/<?= e(basename($aboutImage)) ?>" alt="<?= e($aboutTitle) ?>">
+                <?php else: ?>
+                    <div class="about-photo-empty">Axborot-kutubxona markazi</div>
+                <?php endif; ?>
+            </div>
+            <div class="about-info">
+                <span class="section-label">BIZ HAQIMIZDA</span>
+                <h2><?= e($aboutTitle) ?></h2>
+                <div class="about-text"><?= nl2br(e(shortText($aboutContent, 650))) ?></div>
+                <div class="about-features">
+                    <div><strong>Tajribali xodimlar</strong><span>Malakali mutaxassislar</span></div>
+                    <div><strong>Zamonaviy resurslar</strong><span>Elektron axborot xizmatlari</span></div>
+                    <div><strong>Kitobxonlar uchun</strong><span>Qulay xizmatlar</span></div>
+                </div>
+                <a href="about.php" class="about-button">Markaz haqida batafsil</a>
+            </div>
+        </div>
+    </div>
+</section>
+
+<footer class="site-footer">
+    <div class="container footer-grid">
+        <div class="footer-brand">
+            <div class="footer-brand-title">
+                <?php if (file_exists(__DIR__ . "/logo.png")): ?>
+                    <img src="logo.png" alt="AKM">
+                <?php endif; ?>
+                <strong>Sharof Rashidov nomidagi<br>Jizzax viloyat<br>axborot-kutubxona markazi</strong>
+            </div>
+            <p>"Kitob - bilim, bilim - kelajak!"</p>
+        </div>
+
+        <div class="footer-column">
+            <h3>Yuridik manzil</h3>
+            <p><?= e($aboutAddress ?: "Yuridik manzil ma'lumoti kiritilmagan.") ?></p>
+        </div>
+
+        <div class="footer-column">
+            <h3>Aloqa</h3>
+            <p>Telefon:<br><?= e($aboutPhone ?: "Telefon raqami kiritilmagan.") ?></p>
+            <p>Elektron pochta:<br>
+                <?php if (!empty($aboutEmail)): ?>
+                    <a href="mailto:<?= e($aboutEmail) ?>"><?= e($aboutEmail) ?></a>
+                <?php else: ?>
+                    E-mail manzili kiritilmagan.
+                <?php endif; ?>
+            </p>
+        </div>
+
+        <div class="footer-column">
+            <h3>Biz bilan bog'laning</h3>
+            <a href="<?= e($telegramUrl) ?>" target="_blank" class="social-link">Telegram</a>
+            <a href="<?= e($instagramUrl) ?>" target="_blank" class="social-link">Instagram</a>
+            <a href="<?= e($facebookUrl) ?>" target="_blank" class="social-link">Facebook</a>
+            <a href="<?= e($websiteUrl) ?>" target="_blank" class="social-link">Veb sayt</a>
+        </div>
+    </div>
+
+    <div class="container footer-bottom">
+        <span>  <?= e($currentYear) ?> Sharof Rashidov nomidagi Jizzax viloyat axborot-kutubxona markazi.</span>
+        <span>Barcha huquqlar himoyalangan.</span>
+    </div>
+</footer>
+
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    const params = new URLSearchParams(window.location.search);
+    const search = params.get("search");
+
+    if (search && search.trim() !== "") {
+        const results = document.getElementById("search-results");
+
+        if (results) {
+            window.setTimeout(function () {
+                results.scrollIntoView({
+                    behavior: "smooth",
+                    block: "start"
+                });
+            }, 100);
+        }
+    }
+});
+</script>
+
+</body>
+</html>
+
